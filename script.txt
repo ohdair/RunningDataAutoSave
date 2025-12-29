@@ -1,0 +1,162 @@
+const GEMINI_API_KEY = ‘Google API Key’;
+const SOURCE_FOLDER_ID = ‘RunningResults ID’;
+const DEST_FOLDER_ID = 'RunningArchive ID’;
+
+// ✅ 로그에서 확인된 '사용 가능한 모델명'으로 확정
+const MODEL_NAME = 'gemini-flash-latest'; 
+// ==========================================
+
+function processAllImagesTogether() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const mainSheet = ss.getSheetByName('Main');
+  const detailSheet = ss.getSheetByName('Detail');
+  
+  // 시트 이름 확인
+  if (!mainSheet || !detailSheet) {
+    console.log("❌ 에러: 시트 이름이 'Main'과 'Detail'인지 확인해주세요.");
+    return;
+  }
+
+  const sourceFolder = DriveApp.getFolderById(SOURCE_FOLDER_ID);
+  const destFolder = DriveApp.getFolderById(DEST_FOLDER_ID);
+  const files = sourceFolder.getFiles();
+  
+  let imageParts = [];
+  let processedFiles = [];
+
+  // 폴더에서 이미지 수집
+  while (files.hasNext()) {
+    const file = files.next();
+    const mimeType = file.getMimeType();
+    if (mimeType.indexOf('image') !== -1) {
+      try {
+        const base64 = Utilities.base64Encode(file.getBlob().getBytes());
+        imageParts.push({ "inline_data": { "mime_type": mimeType, "data": base64 } });
+        processedFiles.push(file);
+      } catch (e) {
+        console.log("이미지 변환 중 오류(파일 건너뜀): " + file.getName());
+      }
+    }
+  }
+
+  // 처리할 이미지가 없으면 종료
+  if (imageParts.length === 0) {
+    console.log("📂 폴더에 처리할 이미지가 없습니다.");
+    return;
+  }
+
+  // Gemini 호출
+  const data = callGeminiAPI(imageParts);
+  
+  if (!data) return; // 에러나면 종료
+
+  try {
+    // Run_ID 생성 (자동 증가)
+    const runId = generateRunId(mainSheet, data.date); 
+    
+    // [Main 시트] 저장
+    const note = (data.description || "");
+    mainSheet.appendRow([
+      runId, data.date, data.distance, data.duration, 
+      data.pace, data.heart_rate, data.cadence, data.shoes, note
+    ]);
+
+    // [Detail 시트] 저장
+    if (data.laps && data.laps.length > 0) {
+      const lapRows = data.laps.map(lap => [
+        runId, data.date, lap.km, lap.pace, lap.hr || ""
+      ]);
+      detailSheet.getRange(detailSheet.getLastRow() + 1, 1, lapRows.length, 5).setValues(lapRows);
+    }
+
+    // 처리된 파일 이동
+    processedFiles.forEach(file => file.moveTo(destFolder));
+    console.log(`✅ 성공! [Run_ID: ${runId}] 데이터가 시트에 저장되었습니다.`);
+
+  } catch (e) {
+    console.log("❌ 데이터 시트 저장 중 에러: " + e.toString());
+  }
+}
+
+// ID 생성 함수
+function generateRunId(sheet, dateString) {
+  let dateObj = dateString ? new Date(dateString) : new Date();
+  if (isNaN(dateObj.getTime())) dateObj = new Date();
+
+  const yy = dateObj.getFullYear().toString().slice(-2);
+  const mm = ('0' + (dateObj.getMonth() + 1)).slice(-2);
+  const dd = ('0' + dateObj.getDate()).slice(-2);
+  const prefix = `${yy}${mm}${dd}`;
+
+  const data = sheet.getRange("A:A").getValues();
+  let maxSeq = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    const id = String(data[i][0]);
+    if (id.startsWith(prefix)) {
+      const seq = parseInt(id.replace(prefix, '')) || 0;
+      if (seq > maxSeq) maxSeq = seq;
+    }
+  }
+  return prefix + (maxSeq + 1);
+}
+
+// API 호출 함수
+function callGeminiAPI(imageParts) {
+  const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  const promptText =`
+    이 이미지들은 런닝 앱 기록이야. JSON으로만 답해.
+    
+    [중요: 날짜 계산]
+    - 오늘 날짜(기준일)는 "${today}" 이다.
+    - 만약 이미지에 'Today', '오늘'이라고 적혀 있으면 "${today}"를 날짜로 사용해.
+    - 만약 이미지에 'Yesterday', '어제'라고 적혀 있으면 하루 전 날짜를 계산해서 "YYYY-MM-DD" 형식으로 적어.
+    - 만약 요일만 적혀 있다면(예: 'Sunday'), 오늘 날짜 기준으로 가장 최근의 해당 요일을 계산해.
+
+    [추출 항목]
+    1. 요약 정보(거리, 시간, 페이스, 심박, 케이던스) 추출해.
+    2. '구간 기록(Lap)' 표가 보이면 1km 단위 상세 데이터를 배열로 만들어.
+    3. 메모나 제목이 보이면 description에 넣어.
+    
+    JSON 형식:
+    {
+      "date": "YYYY-MM-DD (반드시 날짜 형식으로 변환)",
+      "distance": "숫자만", "duration": "HH:MM:SS", "pace": "MM'SS''",
+      "heart_rate": "숫자", "cadence": "숫자", "shoes": "텍스트", "description": "텍스트",
+      "laps": [{ "km": 1, "pace": "MM'SS''", "hr": "숫자" }]
+    }
+  `;
+
+  const payload = {
+    "contents": [{ "parts": [{ "text": promptText }, ...imageParts] }]
+  };
+
+  // ✅ 확인된 모델명 사용
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${GEMINI_API_KEY}`;
+
+  try {
+    const response = UrlFetchApp.fetch(url, {
+      "method": "post",
+      "contentType": "application/json",
+      "payload": JSON.stringify(payload),
+      "muteHttpExceptions": true
+    });
+
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
+
+    if (responseCode !== 200) {
+      console.log(`❌ API 호출 실패 (코드 ${responseCode})`);
+      console.log(`에러 내용: ${responseText}`);
+      return null;
+    }
+
+    const resultJson = JSON.parse(responseText);
+    const text = resultJson.candidates[0].content.parts[0].text;
+    return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+
+  } catch (e) {
+    console.log("❌ 분석 함수 내부 에러: " + e.toString());
+    return null;
+  }
+}
