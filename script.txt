@@ -1,8 +1,11 @@
-const GEMINI_API_KEY = ‘Google API Key’;
-const SOURCE_FOLDER_ID = ‘RunningResults ID’;
-const DEST_FOLDER_ID = 'RunningArchive ID’;
+// ==========================================
+// 1. 설정값 입력 (본인의 키와 ID로 채워주세요)
+// ==========================================
+const GEMINI_API_KEY = '여기에_API_키_입력';
+const SOURCE_FOLDER_ID = '런닝_업로드_폴더_ID';
+const DEST_FOLDER_ID = '아카이브_폴더_ID';
 
-// ✅ 로그에서 확인된 '사용 가능한 모델명'으로 확정
+// 모델명 (안정적인 버전)
 const MODEL_NAME = 'gemini-flash-latest'; 
 // ==========================================
 
@@ -11,7 +14,6 @@ function processAllImagesTogether() {
   const mainSheet = ss.getSheetByName('Main');
   const detailSheet = ss.getSheetByName('Detail');
   
-  // 시트 이름 확인
   if (!mainSheet || !detailSheet) {
     console.log("❌ 에러: 시트 이름이 'Main'과 'Detail'인지 확인해주세요.");
     return;
@@ -24,7 +26,6 @@ function processAllImagesTogether() {
   let imageParts = [];
   let processedFiles = [];
 
-  // 폴더에서 이미지 수집
   while (files.hasNext()) {
     const file = files.next();
     const mimeType = file.getMimeType();
@@ -34,51 +35,60 @@ function processAllImagesTogether() {
         imageParts.push({ "inline_data": { "mime_type": mimeType, "data": base64 } });
         processedFiles.push(file);
       } catch (e) {
-        console.log("이미지 변환 중 오류(파일 건너뜀): " + file.getName());
+        console.log("이미지 변환 오류: " + file.getName());
       }
     }
   }
 
-  // 처리할 이미지가 없으면 종료
-  if (imageParts.length === 0) {
-    console.log("📂 폴더에 처리할 이미지가 없습니다.");
-    return;
-  }
+  if (imageParts.length === 0) return; // 이미지 없으면 종료 (비용 0)
 
   // Gemini 호출
   const data = callGeminiAPI(imageParts);
   
-  if (!data) return; // 에러나면 종료
+  if (!data) return;
 
   try {
-    // Run_ID 생성 (자동 증가)
+    // Run_ID 생성
     const runId = generateRunId(mainSheet, data.date); 
     
-    // [Main 시트] 저장
-    const note = (data.description || "");
+    // [Main 시트] 저장 (없으면 빈칸 처리)
+    const note = (data.description || "") + " (자동입력)";
     mainSheet.appendRow([
-      runId, data.date, data.distance, data.duration, 
-      data.pace, data.heart_rate, data.cadence, data.shoes, note
+      runId,
+      data.date,
+      data.distance,
+      data.duration,
+      data.pace,
+      data.heart_rate || "", // 없으면 빈칸
+      data.cadence || "",    // 없으면 빈칸
+      data.shoes || "",
+      note
     ]);
 
-    // [Detail 시트] 저장
+    // [Detail 시트] 저장 (구간별 케이던스 추가됨)
     if (data.laps && data.laps.length > 0) {
       const lapRows = data.laps.map(lap => [
-        runId, data.date, lap.km, lap.pace, lap.hr || ""
+        runId,
+        data.date,
+        lap.km,
+        lap.pace,
+        lap.hr || "",      // 구간 심박수 (없으면 빈칸)
+        lap.cadence || ""  // ✅ 추가됨: 구간 케이던스 (없으면 빈칸)
       ]);
-      detailSheet.getRange(detailSheet.getLastRow() + 1, 1, lapRows.length, 5).setValues(lapRows);
+      
+      // 열 개수(6개)에 맞춰서 입력
+      detailSheet.getRange(detailSheet.getLastRow() + 1, 1, lapRows.length, 6).setValues(lapRows);
     }
 
-    // 처리된 파일 이동
-    processedFiles.forEach(file => file.moveTo(destFolder));
-    console.log(`✅ 성공! [Run_ID: ${runId}] 데이터가 시트에 저장되었습니다.`);
+    // 파일 삭제 (휴지통 이동)
+    processedFiles.forEach(file => file.setTrashed(true));
+    console.log(`✅ 성공! [Run_ID: ${runId}] 저장 완료`);
 
   } catch (e) {
-    console.log("❌ 데이터 시트 저장 중 에러: " + e.toString());
+    console.log("❌ 데이터 저장 중 에러: " + e.toString());
   }
 }
 
-// ID 생성 함수
 function generateRunId(sheet, dateString) {
   let dateObj = dateString ? new Date(dateString) : new Date();
   if (isNaN(dateObj.getTime())) dateObj = new Date();
@@ -101,29 +111,35 @@ function generateRunId(sheet, dateString) {
   return prefix + (maxSeq + 1);
 }
 
-// API 호출 함수
 function callGeminiAPI(imageParts) {
   const today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
-  const promptText =`
+
+  const promptText = `
     이 이미지들은 런닝 앱 기록이야. JSON으로만 답해.
     
-    [중요: 날짜 계산]
-    - 오늘 날짜(기준일)는 "${today}" 이다.
-    - 만약 이미지에 'Today', '오늘'이라고 적혀 있으면 "${today}"를 날짜로 사용해.
-    - 만약 이미지에 'Yesterday', '어제'라고 적혀 있으면 하루 전 날짜를 계산해서 "YYYY-MM-DD" 형식으로 적어.
-    - 만약 요일만 적혀 있다면(예: 'Sunday'), 오늘 날짜 기준으로 가장 최근의 해당 요일을 계산해.
+    [날짜 기준]
+    - 오늘 날짜는 "${today}" 이다. 
+    - 'Today', '오늘' -> "${today}"
+    - 'Yesterday', '어제' -> 하루 전 날짜 계산 (YYYY-MM-DD)
 
-    [추출 항목]
-    1. 요약 정보(거리, 시간, 페이스, 심박, 케이던스) 추출해.
-    2. '구간 기록(Lap)' 표가 보이면 1km 단위 상세 데이터를 배열로 만들어.
-    3. 메모나 제목이 보이면 description에 넣어.
+    [데이터 추출 규칙]
+    1. 데이터가 이미지에 없거나 불확실하면 숫자 0 대신 null 또는 빈 문자열("")을 반환해.
+    2. '구간 기록(Lap)' 표에서 '심박수'와 '케이던스(spm)'도 함께 추출해.
     
-    JSON 형식:
+    [JSON 형식]
     {
-      "date": "YYYY-MM-DD (반드시 날짜 형식으로 변환)",
+      "date": "YYYY-MM-DD",
       "distance": "숫자만", "duration": "HH:MM:SS", "pace": "MM'SS''",
-      "heart_rate": "숫자", "cadence": "숫자", "shoes": "텍스트", "description": "텍스트",
-      "laps": [{ "km": 1, "pace": "MM'SS''", "hr": "숫자" }]
+      "heart_rate": "숫자(없으면 null)", "cadence": "숫자(없으면 null)", 
+      "shoes": "텍스트", "description": "텍스트",
+      "laps": [
+        { 
+          "km": 1, 
+          "pace": "MM'SS''", 
+          "hr": "숫자(없으면 null)", 
+          "cadence": "숫자(없으면 null)" 
+        }
+      ]
     }
   `;
 
@@ -131,7 +147,6 @@ function callGeminiAPI(imageParts) {
     "contents": [{ "parts": [{ "text": promptText }, ...imageParts] }]
   };
 
-  // ✅ 확인된 모델명 사용
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${GEMINI_API_KEY}`;
 
   try {
@@ -142,21 +157,16 @@ function callGeminiAPI(imageParts) {
       "muteHttpExceptions": true
     });
 
-    const responseCode = response.getResponseCode();
-    const responseText = response.getContentText();
-
-    if (responseCode !== 200) {
-      console.log(`❌ API 호출 실패 (코드 ${responseCode})`);
-      console.log(`에러 내용: ${responseText}`);
+    if (response.getResponseCode() !== 200) {
+      console.log(`❌ API 에러: ${response.getContentText()}`);
       return null;
     }
 
-    const resultJson = JSON.parse(responseText);
-    const text = resultJson.candidates[0].content.parts[0].text;
+    const text = JSON.parse(response.getContentText()).candidates[0].content.parts[0].text;
     return JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
 
   } catch (e) {
-    console.log("❌ 분석 함수 내부 에러: " + e.toString());
+    console.log("❌ 분석 에러: " + e.toString());
     return null;
   }
 }
