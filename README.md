@@ -11,7 +11,7 @@ AI가 스크린샷을 분석하여 런닝 상세 데이터와 신발 정보를 �
 | <img width="1263" alt="스크린샷 Main" src="https://github.com/user-attachments/assets/ca782f24-0668-466c-a035-63ac9ddb6e5a" /> | <img width="616" alt="스크린샷 Detail" src="https://github.com/user-attachments/assets/d3b03654-4234-4634-aa1b-3da9aed5a7eb" /> | <img width="889" alt="스크린샷 Shoes" src="https://github.com/user-attachments/assets/71b33a5d-a548-4f19-a378-94a44a8005dd" /> |
 
 **📂 Google Drive 폴더 구성**
-업로드된 원본 스크린샷은 `RunningResults` 폴더에서 처리 후 `RunningArchive`로 이동됩니다.
+업로드된 원본 스크린샷은 `RunningResults` 폴더에서 처리 후, 이미지들은 삭제됩니다.
 
 | ScreenShot 1 | ScreenShot 2 |
 | :---: | :---: |
@@ -42,8 +42,6 @@ Gemini 모델을 사용하기 위해 API 키가 필요합니다.
 
    <img width="537" alt="폴더 ID 확인 방법" src="https://github.com/user-attachments/assets/e949786f-cf75-48ab-aa02-5e4fc095f573" />
    
-3. 동일한 방식으로 **`RunningArchive`** (보관용) 폴더를 생성하고 **ID를 복사**합니다.
-
 ---
 
 ## ⚙️ 3. Google Sheet 및 스크립트 설정
@@ -57,7 +55,7 @@ Gemini 모델을 사용하기 위해 API 키가 필요합니다.
 1. 코드 상단의 변수 설정 부분에 앞서 복사해둔 정보를 입력합니다.
     * `GEMINI_API_KEY`: 위에서 발급받은 API Key
     * `SOURCE_FOLDER_ID`: `RunningResults` 폴더 ID
-    * `ARCHIVE_FOLDER_ID`: `RunningArchive` 폴더 ID
+    * ~~`ARCHIVE_FOLDER_ID`: `RunningArchive` 폴더 ID~~(런닝 앱에 기록되므로 저장이 아닌 삭제로 변경)
     
    <img width="576" alt="스크립트 변수 입력 화면" src="https://github.com/user-attachments/assets/ed3f5fdd-ab7e-44ea-a45d-f3fcc5984174" />
 
